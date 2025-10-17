@@ -5,7 +5,7 @@ on:
 
 jobs:
   call-set-default-matrix:
-    uses: ./.github/workflows/set-default-matrix.yml
+    uses: ./.github/workflows/callable/set-default-matrix.yml
 
   echo-matrix:
     runs-on: ubuntu-latest
@@ -15,4 +15,3 @@ jobs:
         run: |
           echo "Matrix output from set-default-matrix workflow:"
           echo '${{ needs.call-set-default-matrix.outputs.matrix }}' | jq .
-

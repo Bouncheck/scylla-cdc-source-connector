@@ -27,11 +27,10 @@ on:
 
 jobs:
   integration-test:
-    uses: ./.github/workflows/integration-test.yml
+    uses: ./.github/workflows/callable/integration-test.yml
     with:
       kafka_provider: ${{ inputs.kafka_provider }}
       provider_version: ${{ inputs.provider_version }}
       kafka_connect_mode: ${{ inputs.kafka_connect_mode }}
       scylla_version: ${{ inputs.scylla_version }}
       repo_version_tag: ${{ inputs.repo_version_tag }}
-

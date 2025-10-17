@@ -18,7 +18,7 @@ on:
 
 jobs:
   compatibility-test:
-    uses: ./.github/workflows/compatibility-test.yml
+    uses: ./.github/workflows/callable/compatibility-test.yml
     secrets: inherit
     with:
       versions: ${{ inputs.versions }}
