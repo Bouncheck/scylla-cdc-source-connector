@@ -1,0 +1,226 @@
+# Compatibility test with alternating modes and Scylla versions
+name: alternating-test
+
+on:
+  workflow_call:
+    inputs:
+      apache_versions:
+        description: 'List of Apache Kafka versions to test (JSON array)'
+        required: true
+        type: string
+      confluent_versions:
+        description: 'List of Confluent Kafka versions to test (JSON array)'
+        required: true
+        type: string
+      kafka_connect_modes:
+        description: 'List of Kafka Connect modes to alternate through (JSON array)'
+        required: true
+        type: string
+      scylla_versions:
+        description: 'List of Scylla versions to alternate through (JSON array)'
+        required: true
+        type: string
+
+jobs:
+  build-matrix:
+    name: Build alternating matrix
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.create-matrix.outputs.matrix }}
+    steps:
+      - name: Create matrix with alternating modes and versions
+        id: create-matrix
+        run: |
+          apache='${{ inputs.apache_versions }}'
+          confluent='${{ inputs.confluent_versions }}'
+          modes='${{ inputs.kafka_connect_modes }}'
+          scyllas='${{ inputs.scylla_versions }}'
+          
+          # Default values if inputs are empty
+          [ -z "${apache//[[:space:]]/}" ] && apache='["3.7.2"]'
+          [ -z "${confluent//[[:space:]]/}" ] && confluent='["7.5.0"]'
+          [ -z "${modes//[[:space:]]/}" ] && modes='["distributed", "standalone"]'
+          [ -z "${scyllas//[[:space:]]/}" ] && scyllas='["latest", "5.4"]'
+          
+          # Validate JSON arrays
+          for var in "$apache" "$confluent" "$modes" "$scyllas"; do
+            if ! echo "$var" | jq -e 'type=="array"' >/dev/null 2>&1; then
+              echo "Invalid JSON array provided" >&2
+              exit 1
+            fi
+          done
+          
+          # Build matrix with alternating modes and Scylla versions
+          matrix=$(jq -n --argjson apache "$apache" \
+                         --argjson confluent "$confluent" \
+                         --argjson modes "$modes" \
+                         --argjson scyllas "$scyllas" '
+            ($modes | length) as $modes_count |
+            ($scyllas | length) as $scyllas_count |
+            [
+              ($apache | to_entries | map({
+                kafka_provider: "apache",
+                provider_version: .value,
+                kafka_connect_mode: $modes[.key % $modes_count],
+                scylla_version: $scyllas[.key % $scyllas_count]
+              })),
+              ($confluent | to_entries | map({
+                kafka_provider: "confluent",
+                provider_version: .value,
+                kafka_connect_mode: $modes[(.key + ($apache | length)) % $modes_count],
+                scylla_version: $scyllas[(.key + ($apache | length)) % $scyllas_count]
+              }))
+            ] | flatten
+          ')
+          
+          echo "matrix=$(echo "$matrix" | jq -c .)" >> $GITHUB_OUTPUT
+
+  resolve-versions:
+    name: Resolve version patterns
+    needs: build-matrix
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      matrix: ${{ steps.resolve-versions.outputs.matrix }}
+    steps:
+      - name: Download get-version tool
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -sSLo /tmp/get-version.zip https://github.com/scylladb-actions/get-version/releases/download/v0.3.0/get-version_0.3.0_linux_amd64v3.zip
+          unzip -o /tmp/get-version.zip -d /tmp >/dev/null
+          chmod +x /tmp/get-version
+          /tmp/get-version -version || true
+
+      - name: Resolve version patterns to concrete versions
+        id: resolve-versions
+        run: |
+          MATRIX='${{ needs.build-matrix.outputs.matrix }}'
+          echo "::group::Original Matrix (with potential patterns)"; echo "$MATRIX" | jq '.'; echo "::endgroup::"
+
+          RESOLVED_ENTRIES=()
+          echo "::group::Version Resolution Process"
+          while IFS= read -r entry; do
+            PROVIDER=$(echo "$entry" | jq -r '.kafka_provider')
+            PATTERN=$(echo "$entry" | jq -r '.provider_version')
+            MODE=$(echo "$entry" | jq -r '.kafka_connect_mode')
+            SCYLLA_PATTERN=$(echo "$entry" | jq -r '.scylla_version')
+
+            # Resolve Kafka provider version
+            if [ "$PROVIDER" = "confluent" ]; then
+              REPO="confluentinc/cp-kafka"
+            else
+              REPO="apache/kafka"
+            fi
+
+            # Check if version contains pattern keywords (LAST or wildcards)
+            if echo "$PATTERN" | grep -qE 'LAST|\.x$'; then
+              echo "Resolving Kafka: provider=$PROVIDER, connect_mode=$MODE, pattern=$PATTERN, repo=$REPO"
+              if ! VERSION=$(/tmp/get-version -source dockerhub-imagetag -repo "$REPO" -filters "$PATTERN"); then
+                echo "::error::Resolution command failed for $PROVIDER pattern $PATTERN" >&2
+                exit 1
+              fi
+              VERSION=$(echo "$VERSION" | tr -d '\r')
+              if [ -z "$VERSION" ]; then
+                echo "::error::Empty version resolved for $PROVIDER pattern $PATTERN" >&2
+                exit 1
+              fi
+              echo "  ✓ Resolved to: $VERSION"; echo
+            else
+              # Version is already concrete, use as-is
+              VERSION="$PATTERN"
+              echo "Keeping concrete Kafka version: provider=$PROVIDER, version=$VERSION"; echo
+            fi
+
+            # Resolve Scylla version
+            if [[ "$SCYLLA_PATTERN" == "LTS-LATEST" ]]; then
+              echo "Resolving Scylla: pattern=$SCYLLA_PATTERN"
+              if ! SCYLLA_VERSION=$(/tmp/get-version -source dockerhub-imagetag -repo scylladb/scylla -filters "^[0-9]{4}$.^[0-9]+$.^[0-9]+$ and LAST.1.LAST"); then
+                echo "::error::Resolution command failed for Scylla pattern $SCYLLA_PATTERN" >&2
+                exit 1
+              fi
+              SCYLLA_VERSION=$(echo "$SCYLLA_VERSION" | tr -d '\r' | tr -d '"')
+              if [ -z "$SCYLLA_VERSION" ]; then
+                echo "::error::Empty version resolved for Scylla pattern $SCYLLA_PATTERN" >&2
+                exit 1
+              fi
+              echo "  ✓ Resolved to: $SCYLLA_VERSION"; echo
+            elif [[ "$SCYLLA_PATTERN" == "LTS-PRIOR" ]]; then
+              echo "Resolving Scylla: pattern=$SCYLLA_PATTERN"
+              if ! SCYLLA_VERSION=$(/tmp/get-version -source dockerhub-imagetag -repo scylladb/scylla -filters "^[0-9]{4}$.^[0-9]+$.^[0-9]+$ and LAST-1.1.LAST"); then
+                echo "::warning::Failed to resolve from scylladb/scylla, trying scylladb/scylla-enterprise"
+                if ! SCYLLA_VERSION=$(/tmp/get-version -source dockerhub-imagetag -repo scylladb/scylla-enterprise -filters "^[0-9]{4}$.^[0-9]+$.^[0-9]+$ and LAST-1.1.LAST"); then
+                  echo "::error::Resolution command failed for Scylla pattern $SCYLLA_PATTERN" >&2
+                  exit 1
+                fi
+              fi
+              SCYLLA_VERSION=$(echo "$SCYLLA_VERSION" | tr -d '\r' | tr -d '"')
+              if [ -z "$SCYLLA_VERSION" ]; then
+                echo "::error::Empty version resolved for Scylla pattern $SCYLLA_PATTERN" >&2
+                exit 1
+              fi
+              echo "  ✓ Resolved to: $SCYLLA_VERSION"; echo
+            elif [[ "$SCYLLA_PATTERN" == "LATEST" ]]; then
+              echo "Resolving Scylla: pattern=$SCYLLA_PATTERN"
+              if ! SCYLLA_VERSION=$(/tmp/get-version -source dockerhub-imagetag -repo scylladb/scylla -filters "^[0-9]{4}$.^[0-9]+$.^[0-9]+$ and LAST.LAST.LAST"); then
+                echo "::error::Resolution command failed for Scylla pattern $SCYLLA_PATTERN" >&2
+                exit 1
+              fi
+              SCYLLA_VERSION=$(echo "$SCYLLA_VERSION" | tr -d '\r' | tr -d '"')
+              if [ -z "$SCYLLA_VERSION" ]; then
+                echo "::error::Empty version resolved for Scylla pattern $SCYLLA_PATTERN" >&2
+                exit 1
+              fi
+              echo "  ✓ Resolved to: $SCYLLA_VERSION"; echo
+            elif [[ "$SCYLLA_PATTERN" == "PRIOR" ]]; then
+              echo "Resolving Scylla: pattern=$SCYLLA_PATTERN"
+              if ! SCYLLA_VERSION=$(/tmp/get-version -source dockerhub-imagetag -repo scylladb/scylla -filters "^[0-9]{4}$.^[0-9]+$.^[0-9]+$ and LAST.LAST.LAST-1"); then
+                echo "::error::Resolution command failed for Scylla pattern $SCYLLA_PATTERN" >&2
+                exit 1
+              fi
+              SCYLLA_VERSION=$(echo "$SCYLLA_VERSION" | tr -d '\r' | tr -d '"')
+              if [ -z "$SCYLLA_VERSION" ]; then
+                echo "::error::Empty version resolved for Scylla pattern $SCYLLA_PATTERN" >&2
+                exit 1
+              fi
+              echo "  ✓ Resolved to: $SCYLLA_VERSION"; echo
+            elif echo "$SCYLLA_PATTERN" | grep -qP '^[0-9\.]+|^latest$'; then
+              # Version is already concrete (numeric version or "latest"), use as-is
+              SCYLLA_VERSION="$SCYLLA_PATTERN"
+              echo "Keeping concrete Scylla version: $SCYLLA_VERSION"; echo
+            else
+              echo "::error::Unknown Scylla version pattern '$SCYLLA_PATTERN'" >&2
+              exit 1
+            fi
+
+            RESOLVED_ENTRY=$(jq -n \
+              --arg provider "$PROVIDER" \
+              --arg version "$VERSION" \
+              --arg mode "$MODE" \
+              --arg scylla "$SCYLLA_VERSION" \
+              '{kafka_provider: $provider, provider_version: $version, kafka_connect_mode: $mode, scylla_version: $scylla}')
+            RESOLVED_ENTRIES+=("$RESOLVED_ENTRY")
+          done < <(echo "$MATRIX" | jq -c '.[]')
+          echo "::endgroup::"
+
+          RESOLVED_MATRIX=$(printf '%s\n' "${RESOLVED_ENTRIES[@]}" | jq -s '.')
+          echo "::group::Resolved Matrix (before deduplication)"; echo "$RESOLVED_MATRIX" | jq '.'; echo "::endgroup::"
+
+          DEDUPLICATED_MATRIX=$(echo "$RESOLVED_MATRIX" | jq -c 'reduce .[] as $i ([]; if any(.[]; . == $i) then . else . + [$i] end)')
+          echo "::group::Final Matrix (after deduplication)"; echo "$DEDUPLICATED_MATRIX" | jq '.'; echo "::endgroup::"
+
+          echo "matrix=$DEDUPLICATED_MATRIX" >> "$GITHUB_OUTPUT"
+
+  integration-tests:
+    needs: resolve-versions
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJson(needs.resolve-versions.outputs.matrix) }}
+    uses: ./.github/workflows/callable/integration-test.yml
+    with:
+      kafka_provider: ${{ matrix.kafka_provider }}
+      provider_version: ${{ matrix.provider_version }}
+      kafka_connect_mode: ${{ matrix.kafka_connect_mode }}
+      scylla_version: ${{ matrix.scylla_version }}
