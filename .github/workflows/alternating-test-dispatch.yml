@@ -35,11 +35,10 @@ on:
 
 jobs:
   alternating-test:
-    uses: ./.github/workflows/callable/alternating-test.yml
+    uses: ./.github/workflows/alternating-test.yml
     secrets: inherit
     with:
       apache_versions: ${{ inputs.apache_versions }}
       confluent_versions: ${{ inputs.confluent_versions }}
       kafka_connect_modes: ${{ inputs.kafka_connect_modes }}
       scylla_versions: ${{ inputs.scylla_versions }}
-

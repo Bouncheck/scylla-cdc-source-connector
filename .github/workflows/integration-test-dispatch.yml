@@ -27,7 +27,7 @@ on:
 
 jobs:
   integration-test:
-    uses: ./.github/workflows/callable/integration-test.yml
+    uses: ./.github/workflows/integration-test.yml
     with:
       kafka_provider: ${{ inputs.kafka_provider }}
       provider_version: ${{ inputs.provider_version }}

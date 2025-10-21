@@ -10,5 +10,5 @@ on:
 
 jobs:
   run-integration-tests:
-    uses: ./.github/workflows/callable/compatibility-test.yml
+    uses: ./.github/workflows/compatibility-test.yml
     secrets: inherit

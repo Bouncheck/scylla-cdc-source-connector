@@ -218,7 +218,7 @@ jobs:
       fail-fast: false
       matrix:
         include: ${{ fromJson(needs.resolve-versions.outputs.matrix) }}
-    uses: ./.github/workflows/callable/integration-test.yml
+    uses: ./.github/workflows/integration-test.yml
     with:
       kafka_provider: ${{ matrix.kafka_provider }}
       provider_version: ${{ matrix.provider_version }}
