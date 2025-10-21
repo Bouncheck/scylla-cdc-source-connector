@@ -1,0 +1,45 @@
+# Dispatchable workflow for alternating compatibility tests
+name: alternating-test-dispatch
+
+on:
+  workflow_dispatch:
+    inputs:
+      apache_versions:
+        description: |
+          List of Apache Kafka versions to test (JSON array). Supports get-version patterns.
+          Example: ["3.7.2", "3.8.0"]
+        required: false
+        type: string
+        default: '["3.7.2"]'
+      confluent_versions:
+        description: |
+          List of Confluent Kafka versions to test (JSON array). Supports get-version patterns.
+          Example: ["7.5.0", "7.6.0"]
+        required: false
+        type: string
+        default: '["7.5.0"]'
+      kafka_connect_modes:
+        description: |
+          List of Kafka Connect modes to alternate through (JSON array).
+          Example: ["distributed", "standalone"]
+        required: false
+        type: string
+        default: '["distributed", "standalone"]'
+      scylla_versions:
+        description: |
+          List of Scylla versions to alternate through (JSON array). Supports custom values "LATEST", "PRIOR", "LTS-LATEST", "LTS-PRIOR".
+          Example: ["latest", "5.4", "5.2"]
+        required: false
+        type: string
+        default: '["latest", "5.4"]'
+
+jobs:
+  alternating-test:
+    uses: ./.github/workflows/callable/alternating-test.yml
+    secrets: inherit
+    with:
+      apache_versions: ${{ inputs.apache_versions }}
+      confluent_versions: ${{ inputs.confluent_versions }}
+      kafka_connect_modes: ${{ inputs.kafka_connect_modes }}
+      scylla_versions: ${{ inputs.scylla_versions }}
+
